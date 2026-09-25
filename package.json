@@ -1,0 +1,13 @@
+{
+  "name": "project-management-platform",
+  "private": true,
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w @pmp/api\" \"npm run dev -w @pmp/web\"",
+    "build": "npm run build -ws",
+    "typecheck": "npm run typecheck -ws",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down"
+  },
+  "devDependencies": { "concurrently": "^9.1.2" }
+}

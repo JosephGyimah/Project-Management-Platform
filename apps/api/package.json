@@ -1,0 +1,8 @@
+{
+  "name": "@pmp/api",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "tsx watch src/server.ts", "build": "tsc", "typecheck": "tsc --noEmit" },
+  "dependencies": { "@fastify/cors": "^10.0.1", "@fastify/sensible": "^6.0.1", "fastify": "^5.2.1", "pg": "^8.13.1", "@pmp/contracts": "*" },
+  "devDependencies": { "@types/node": "^22.10.2", "@types/pg": "^8.11.10", "tsx": "^4.19.2", "typescript": "^5.7.2" }
+}
