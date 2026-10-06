@@ -1,11 +1,14 @@
-import { StrictMode, useEffect, useMemo, useState } from 'react';
+import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { CreateProjectInput, CreateTaskInput, PaginatedApiResponse, Project, Task, TaskStatus } from '@pmp/contracts';
-import { api } from './api';
+import type { CreateProjectInput, CreateTaskInput, Project, RealtimeEvent, Task, TaskStatus } from '@pmp/contracts';
+import { api, getErrorMessage } from './api';
 import { validateProjectForm, validateTaskForm } from './validation';
 import './styles.css';
 
 type PaginationState = { page: number; pageSize: number; total: number; totalPages: number };
+type ToastKind = 'success' | 'error' | 'info';
+type Toast = { id: string; kind: ToastKind; message: string };
+type SystemNotification = { id: string; kind: ToastKind; message: string; createdAt: string };
 
 const defaultPagination: PaginationState = { page: 1, pageSize: 5, total: 0, totalPages: 0 };
 
@@ -29,55 +32,145 @@ function App() {
   const [taskForm, setTaskForm] = useState<CreateTaskInput>({ projectId: '', title: '', description: '', status: 'todo' });
   const [projectErrors, setProjectErrors] = useState<string[]>([]);
   const [taskErrors, setTaskErrors] = useState<string[]>([]);
-  const [message, setMessage] = useState('');
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [notifications, setNotifications] = useState<SystemNotification[]>([]);
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId),
     [projects, selectedProjectId]
   );
 
-  const refreshProjects = async (page = projectPagination.page) => {
-    const response = await api.listProjects({
-      search: projectQuery,
-      status: projectStatusFilter === 'all' ? undefined : projectStatusFilter,
-      page,
-      pageSize: projectPagination.pageSize
-    });
-    setProjects(response.data);
-    setProjectPagination(response.pagination);
-    if (!selectedProjectId && response.data[0]) {
-      setSelectedProjectId(response.data[0].id);
-      setTaskForm((prev) => ({ ...prev, projectId: response.data[0].id }));
-    }
-  };
+  const addToast = useCallback((kind: ToastKind, message: string) => {
+    setToasts((prev) => [{ id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, kind, message }, ...prev].slice(0, 5));
+  }, []);
 
-  const refreshTasks = async (projectId: string, page = taskPagination.page) => {
-    if (!projectId) {
-      setTasks([]);
-      return;
-    }
+  const addNotification = useCallback((kind: ToastKind, message: string) => {
+    setNotifications((prev) =>
+      [
+        { id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, kind, message, createdAt: new Date().toISOString() },
+        ...prev
+      ].slice(0, 12)
+    );
+  }, []);
 
-    const response = await api.listTasks({
-      projectId,
-      search: taskQuery,
-      status: taskStatusFilter === 'all' ? undefined : taskStatusFilter,
-      page,
-      pageSize: taskPagination.pageSize
-    });
+  const reportError = useCallback(
+    (error: unknown, fallback: string) => {
+      const message = getErrorMessage(error, fallback);
+      addToast('error', message);
+      addNotification('error', message);
+    },
+    [addNotification, addToast]
+  );
 
-    setTasks(response.data);
-    setTaskPagination(response.pagination);
-  };
+  const reportSuccess = useCallback(
+    (message: string) => {
+      addToast('success', message);
+      addNotification('success', message);
+    },
+    [addNotification, addToast]
+  );
+
+  const handleRealtimeEvent = useCallback(
+    async (event: RealtimeEvent) => {
+      addToast('info', event.message);
+      addNotification('info', event.message);
+
+      if (event.entity === 'project') {
+        const response = await api.listProjects({
+          search: projectQuery,
+          status: projectStatusFilter === 'all' ? undefined : projectStatusFilter,
+          page: 1,
+          pageSize: projectPagination.pageSize
+        });
+
+        setProjects(response.data);
+        setProjectPagination(response.pagination);
+      }
+
+      if (event.entity === 'task' && selectedProjectId && event.projectId === selectedProjectId) {
+        const response = await api.listTasks({
+          projectId: selectedProjectId,
+          search: taskQuery,
+          status: taskStatusFilter === 'all' ? undefined : taskStatusFilter,
+          page: 1,
+          pageSize: taskPagination.pageSize
+        });
+        setTasks(response.data);
+        setTaskPagination(response.pagination);
+      }
+    },
+    [addNotification, addToast, projectPagination.pageSize, projectQuery, projectStatusFilter, selectedProjectId, taskPagination.pageSize, taskQuery, taskStatusFilter]
+  );
+
+  const refreshProjects = useCallback(
+    async (page = projectPagination.page) => {
+      const response = await api.listProjects({
+        search: projectQuery,
+        status: projectStatusFilter === 'all' ? undefined : projectStatusFilter,
+        page,
+        pageSize: projectPagination.pageSize
+      });
+      setProjects(response.data);
+      setProjectPagination(response.pagination);
+      if (!selectedProjectId && response.data[0]) {
+        setSelectedProjectId(response.data[0].id);
+        setTaskForm((prev) => ({ ...prev, projectId: response.data[0].id }));
+      }
+    },
+    [projectPagination.page, projectPagination.pageSize, projectQuery, projectStatusFilter, selectedProjectId]
+  );
+
+  const refreshTasks = useCallback(
+    async (projectId: string, page = taskPagination.page) => {
+      if (!projectId) {
+        setTasks([]);
+        return;
+      }
+
+      const response = await api.listTasks({
+        projectId,
+        search: taskQuery,
+        status: taskStatusFilter === 'all' ? undefined : taskStatusFilter,
+        page,
+        pageSize: taskPagination.pageSize
+      });
+
+      setTasks(response.data);
+      setTaskPagination(response.pagination);
+    },
+    [taskPagination.page, taskPagination.pageSize, taskQuery, taskStatusFilter]
+  );
 
   useEffect(() => {
-    void refreshProjects(1).catch((error: unknown) => setMessage(error instanceof Error ? error.message : 'Unable to load projects.'));
-  }, [projectQuery, projectStatusFilter]);
+    void refreshProjects(1).catch((error: unknown) => reportError(error, 'Unable to load projects.'));
+  }, [projectQuery, projectStatusFilter, refreshProjects, reportError]);
 
   useEffect(() => {
     if (!selectedProjectId) return;
     setTaskForm((prev) => ({ ...prev, projectId: selectedProjectId }));
-    void refreshTasks(selectedProjectId, 1).catch((error: unknown) => setMessage(error instanceof Error ? error.message : 'Unable to load tasks.'));
-  }, [selectedProjectId, taskQuery, taskStatusFilter]);
+    void refreshTasks(selectedProjectId, 1).catch((error: unknown) => reportError(error, 'Unable to load tasks.'));
+  }, [refreshTasks, reportError, selectedProjectId, taskQuery, taskStatusFilter]);
+
+  useEffect(() => {
+    if (toasts.length === 0) return;
+    const timeout = window.setTimeout(() => {
+      setToasts((prev) => prev.slice(0, -1));
+    }, 4000);
+    return () => window.clearTimeout(timeout);
+  }, [toasts]);
+
+  useEffect(
+    () =>
+      api.subscribeToRealtimeEvents({
+        onEvent: (event) => {
+          void handleRealtimeEvent(event).catch((error: unknown) => reportError(error, 'Unable to process realtime update.'));
+        },
+        onError: (message) => {
+          addNotification('error', message);
+        }
+      }),
+    [addNotification, handleRealtimeEvent, reportError]
+  );
 
   const handleCreateProject = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -108,11 +201,11 @@ function App() {
       setSelectedProjectId(response.data.id);
       setTaskForm((prev) => ({ ...prev, projectId: response.data.id }));
       setProjectForm({ name: '', description: '' });
-      setMessage('Project created.');
+      reportSuccess('Project created.');
       await refreshProjects(1);
     } catch (error) {
       setProjects(previousProjects);
-      setMessage(error instanceof Error ? error.message : 'Could not create project.');
+      reportError(error, 'Could not create project.');
     }
   };
 
@@ -122,10 +215,10 @@ function App() {
 
     try {
       await api.updateProject(project.id, { status });
-      setMessage(`Project marked as ${status}.`);
+      reportSuccess(`Project marked as ${status}.`);
     } catch (error) {
       setProjects(previousProjects);
-      setMessage(error instanceof Error ? error.message : 'Could not update project.');
+      reportError(error, 'Could not update project.');
     }
   };
 
@@ -140,11 +233,11 @@ function App() {
 
     try {
       await api.deleteProject(projectId);
-      setMessage('Project deleted.');
+      reportSuccess('Project deleted.');
       await refreshProjects(1);
     } catch (error) {
       setProjects(previousProjects);
-      setMessage(error instanceof Error ? error.message : 'Could not delete project.');
+      reportError(error, 'Could not delete project.');
     }
   };
 
@@ -183,11 +276,11 @@ function App() {
 
       setTasks((prev) => prev.map((task) => (task.id === optimisticTask.id ? response.data : task)));
       setTaskForm({ projectId: payload.projectId, title: '', description: '', status: 'todo' });
-      setMessage('Task added.');
+      reportSuccess('Task added.');
       await refreshTasks(payload.projectId, 1);
     } catch (error) {
       setTasks(previousTasks);
-      setMessage(error instanceof Error ? error.message : 'Could not create task.');
+      reportError(error, 'Could not create task.');
     }
   };
 
@@ -197,10 +290,10 @@ function App() {
 
     try {
       await api.updateTask(task.id, { status });
-      setMessage('Task updated.');
+      reportSuccess('Task updated.');
     } catch (error) {
       setTasks(previousTasks);
-      setMessage(error instanceof Error ? error.message : 'Could not update task.');
+      reportError(error, 'Could not update task.');
     }
   };
 
@@ -210,13 +303,13 @@ function App() {
 
     try {
       await api.deleteTask(taskId);
-      setMessage('Task deleted.');
+      reportSuccess('Task deleted.');
       if (selectedProjectId) {
         await refreshTasks(selectedProjectId, 1);
       }
     } catch (error) {
       setTasks(previousTasks);
-      setMessage(error instanceof Error ? error.message : 'Could not delete task.');
+      reportError(error, 'Could not delete task.');
     }
   };
 
@@ -224,7 +317,6 @@ function App() {
     <main className="app">
       <header>
         <h1>Project Management Platform</h1>
-        {message && <p className="message">{message}</p>}
       </header>
 
       <section className="panel">

@@ -6,6 +6,7 @@ import type {
   PaginatedApiResponse,
   Project,
   ProjectFilters,
+  RealtimeEvent,
   Task,
   TaskFilters,
   UpdateProjectInput,
@@ -15,6 +16,28 @@ import type {
 const API_URL =
   (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_API_URL ??
   'http://localhost:4000';
+
+const WEBSOCKET_OPEN = 1;
+
+type RequestErrorPayload = {
+  code: string;
+  message: string;
+  issues?: Array<{ message: string }>;
+};
+
+export class ApiClientError extends Error {
+  readonly code: string;
+  readonly status: number;
+  readonly issues?: Array<{ message: string }>;
+
+  constructor(payload: RequestErrorPayload, status: number) {
+    super(payload.issues?.[0]?.message ?? payload.message);
+    this.name = 'ApiClientError';
+    this.code = payload.code;
+    this.status = status;
+    this.issues = payload.issues;
+  }
+}
 
 const toQueryString = (params: Record<string, string | number | undefined>): string => {
   const query = new URLSearchParams();
@@ -27,6 +50,13 @@ const toQueryString = (params: Record<string, string | number | undefined>): str
   return encoded ? `?${encoded}` : '';
 };
 
+const toRealtimeUrl = (): string => {
+  const url = new URL(API_URL);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  url.pathname = '/api/events';
+  return url.toString();
+};
+
 const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
@@ -37,11 +67,41 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   });
 
   if (!response.ok) {
-    const error = (await response.json()) as ApiError;
-    throw new Error(error.error.issues?.[0]?.message ?? error.error.message);
+    const fallbackError: RequestErrorPayload = { code: 'REQUEST_FAILED', message: `Request failed with status ${response.status}.` };
+
+    try {
+      const error = (await response.json()) as ApiError;
+      throw new ApiClientError(
+        {
+          code: error.error.code ?? fallbackError.code,
+          message: error.error.message ?? fallbackError.message,
+          issues: error.error.issues
+        },
+        response.status
+      );
+    } catch {
+      throw new ApiClientError(fallbackError, response.status);
+    }
   }
 
   return response.json() as Promise<T>;
+};
+
+export const getErrorMessage = (error: unknown, fallback: string): string => {
+  if (error instanceof ApiClientError) {
+    return error.message || fallback;
+  }
+
+  if (error instanceof Error) {
+    return error.message || fallback;
+  }
+
+  return fallback;
+};
+
+type RealtimeHandlers = {
+  onEvent: (event: RealtimeEvent) => void;
+  onError: (message: string) => void;
 };
 
 export const api = {
@@ -90,5 +150,36 @@ export const api = {
   deleteTask: (taskId: string) =>
     request<{ data: { deleted: boolean } }>(`/api/tasks/${taskId}`, {
       method: 'DELETE'
-    })
+    }),
+  subscribeToRealtimeEvents: ({ onEvent, onError }: RealtimeHandlers): (() => void) => {
+    if (typeof WebSocket === 'undefined') {
+      return () => undefined;
+    }
+
+    const socket = new WebSocket(toRealtimeUrl());
+
+    socket.addEventListener('message', (event) => {
+      try {
+        onEvent(JSON.parse(String(event.data)) as RealtimeEvent);
+      } catch {
+        onError('Received an invalid realtime payload.');
+      }
+    });
+
+    socket.addEventListener('error', () => {
+      onError('Realtime connection error.');
+    });
+
+    socket.addEventListener('close', () => {
+      if (socket.readyState !== WEBSOCKET_OPEN) {
+        onError('Realtime updates disconnected.');
+      }
+    });
+
+    return () => {
+      if (socket.readyState === WEBSOCKET_OPEN) {
+        socket.close();
+      }
+    };
+  }
 };

@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import sensible from '@fastify/sensible';
+import websocket from '@fastify/websocket';
 import type {
   ApiError,
   ApiResponse,
@@ -9,6 +10,7 @@ import type {
   PaginatedApiResponse,
   Project,
   ProjectFilters,
+  RealtimeEvent,
   Task,
   TaskFilters,
   UpdateProjectInput,
@@ -18,6 +20,7 @@ import type {
 import { createPool, runMigrations } from './db.js';
 import { PgStore, type DataStore } from './store.js';
 import { parsePagination, validateCreateProject, validateCreateTask, validateUpdateProject, validateUpdateTask } from './validation.js';
+import type { WebSocket } from 'ws';
 
 const toProjectFilters = (query: Record<string, unknown>): ProjectFilters => {
   const pagination = parsePagination({
@@ -58,9 +61,41 @@ const sendValidationError = (issues: ValidationIssue[]): ApiError => ({
 
 export const buildApp = async (store: DataStore) => {
   const app = Fastify({ logger: true });
+  const realtimeSubscribers = new Set<WebSocket>();
 
   await app.register(cors, { origin: true });
   await app.register(sensible);
+  await app.register(websocket);
+
+  const broadcastEvent = (event: RealtimeEvent): void => {
+    const payload = JSON.stringify(event);
+    for (const subscriber of realtimeSubscribers) {
+      if (subscriber.readyState !== 1) {
+        realtimeSubscribers.delete(subscriber);
+        continue;
+      }
+
+      subscriber.send(payload);
+    }
+  };
+
+  app.get('/api/events', { websocket: true }, (connection) => {
+    realtimeSubscribers.add(connection.socket);
+
+    connection.socket.send(
+      JSON.stringify({
+        type: 'system.connected',
+        entity: 'system',
+        entityId: 'events',
+        message: 'Realtime notifications connected.',
+        createdAt: new Date().toISOString()
+      } satisfies RealtimeEvent)
+    );
+
+    connection.socket.on('close', () => {
+      realtimeSubscribers.delete(connection.socket);
+    });
+  });
 
   app.get('/health', async () => ({ status: 'ok', database: 'up' }));
 
@@ -76,6 +111,13 @@ export const buildApp = async (store: DataStore) => {
     }
 
     const project = await store.createProject(validation.value);
+    broadcastEvent({
+      type: 'project.created',
+      entity: 'project',
+      entityId: project.id,
+      message: `Project "${project.name}" created.`,
+      createdAt: new Date().toISOString()
+    });
     return { data: project };
   });
 
@@ -86,6 +128,14 @@ export const buildApp = async (store: DataStore) => {
     if (!project) {
       return reply.status(404).send({ error: { code: 'PROJECT_NOT_FOUND', message: 'Project not found.' } });
     }
+
+    broadcastEvent({
+      type: 'project.updated',
+      entity: 'project',
+      entityId: project.id,
+      message: `Project "${project.name}" updated.`,
+      createdAt: new Date().toISOString()
+    });
 
     return { data: project };
   });
@@ -115,6 +165,14 @@ export const buildApp = async (store: DataStore) => {
       return reply.status(404).send({ error: { code: 'PROJECT_NOT_FOUND', message: 'Project not found.' } });
     }
 
+    broadcastEvent({
+      type: 'project.deleted',
+      entity: 'project',
+      entityId: projectId,
+      message: 'Project deleted.',
+      createdAt: new Date().toISOString()
+    });
+
     return { data: { deleted: true } };
   });
 
@@ -136,6 +194,15 @@ export const buildApp = async (store: DataStore) => {
       return reply.status(404).send({ error: { code: 'PROJECT_NOT_FOUND', message: 'Project not found.' } });
     }
 
+    broadcastEvent({
+      type: 'task.created',
+      entity: 'task',
+      entityId: task.id,
+      projectId: task.projectId,
+      message: `Task "${task.title}" created.`,
+      createdAt: new Date().toISOString()
+    });
+
     return { data: task };
   });
 
@@ -146,6 +213,15 @@ export const buildApp = async (store: DataStore) => {
     if (!task) {
       return reply.status(404).send({ error: { code: 'TASK_NOT_FOUND', message: 'Task not found.' } });
     }
+
+    broadcastEvent({
+      type: 'task.updated',
+      entity: 'task',
+      entityId: task.id,
+      projectId: task.projectId,
+      message: `Task "${task.title}" updated.`,
+      createdAt: new Date().toISOString()
+    });
 
     return { data: task };
   });
@@ -174,6 +250,14 @@ export const buildApp = async (store: DataStore) => {
     if (!deleted) {
       return reply.status(404).send({ error: { code: 'TASK_NOT_FOUND', message: 'Task not found.' } });
     }
+
+    broadcastEvent({
+      type: 'task.deleted',
+      entity: 'task',
+      entityId: taskId,
+      message: 'Task deleted.',
+      createdAt: new Date().toISOString()
+    });
 
     return { data: { deleted: true } };
   });

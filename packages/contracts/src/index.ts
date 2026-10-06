@@ -105,3 +105,23 @@ export interface ApiError {
     issues?: ValidationIssue[];
   };
 }
+
+export type RealtimeEventType =
+  | 'system.connected'
+  | 'project.created'
+  | 'project.updated'
+  | 'project.deleted'
+  | 'task.created'
+  | 'task.updated'
+  | 'task.deleted';
+
+export type RealtimeEventEntity = 'system' | 'project' | 'task';
+
+export interface RealtimeEvent {
+  type: RealtimeEventType;
+  entity: RealtimeEventEntity;
+  entityId: string;
+  projectId?: string;
+  message: string;
+  createdAt: string;
+}
