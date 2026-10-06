@@ -1,11 +1,13 @@
 import { StrictMode, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { CreateProjectInput, CreateTaskInput, PaginatedApiResponse, Project, Task, TaskStatus } from '@pmp/contracts';
+import type { AuthUser, CreateProjectInput, CreateTaskInput, Project, Task, TaskStatus } from '@pmp/contracts';
 import { api } from './api';
 import { validateProjectForm, validateTaskForm } from './validation';
 import './styles.css';
 
 type PaginationState = { page: number; pageSize: number; total: number; totalPages: number };
+
+type LoginFormState = { email: string; password: string };
 
 const defaultPagination: PaginationState = { page: 1, pageSize: 5, total: 0, totalPages: 0 };
 
@@ -16,6 +18,9 @@ const statusColumns: Array<{ status: TaskStatus; title: string }> = [
 ];
 
 function App() {
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [loginForm, setLoginForm] = useState<LoginFormState>({ email: 'admin@pmp.local', password: 'AdminPass123!' });
+  const [authError, setAuthError] = useState('');
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>('');
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -35,6 +40,10 @@ function App() {
     () => projects.find((project) => project.id === selectedProjectId),
     [projects, selectedProjectId]
   );
+
+  const canManageProjects = currentUser?.role === 'admin' || currentUser?.role === 'project_lead';
+  const canDeleteProjects = currentUser?.role === 'admin';
+  const canDeleteTasks = currentUser?.role === 'admin' || currentUser?.role === 'project_lead';
 
   const refreshProjects = async (page = projectPagination.page) => {
     const response = await api.listProjects({
@@ -70,17 +79,52 @@ function App() {
   };
 
   useEffect(() => {
-    void refreshProjects(1).catch((error: unknown) => setMessage(error instanceof Error ? error.message : 'Unable to load projects.'));
-  }, [projectQuery, projectStatusFilter]);
+    void api
+      .me()
+      .then((response) => {
+        setCurrentUser(response.data);
+        setAuthError('');
+      })
+      .catch(() => {
+        setCurrentUser(null);
+      });
+  }, []);
 
   useEffect(() => {
-    if (!selectedProjectId) return;
+    if (!currentUser) return;
+    void refreshProjects(1).catch((error: unknown) => setMessage(error instanceof Error ? error.message : 'Unable to load projects.'));
+  }, [currentUser, projectQuery, projectStatusFilter]);
+
+  useEffect(() => {
+    if (!selectedProjectId || !currentUser) return;
     setTaskForm((prev) => ({ ...prev, projectId: selectedProjectId }));
     void refreshTasks(selectedProjectId, 1).catch((error: unknown) => setMessage(error instanceof Error ? error.message : 'Unable to load tasks.'));
-  }, [selectedProjectId, taskQuery, taskStatusFilter]);
+  }, [currentUser, selectedProjectId, taskQuery, taskStatusFilter]);
+
+  const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    try {
+      const response = await api.login({ email: loginForm.email.trim(), password: loginForm.password });
+      setCurrentUser(response.data.user);
+      setAuthError('');
+      setMessage(`Signed in as ${response.data.user.role.replace('_', ' ')}.`);
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Sign in failed.');
+    }
+  };
+
+  const handleLogout = async () => {
+    await api.logout();
+    setCurrentUser(null);
+    setProjects([]);
+    setTasks([]);
+    setSelectedProjectId('');
+    setMessage('Signed out.');
+  };
 
   const handleCreateProject = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!canManageProjects) return;
     const errors = validateProjectForm(projectForm);
     setProjectErrors(errors);
     if (errors.length > 0) return;
@@ -117,6 +161,7 @@ function App() {
   };
 
   const handleProjectStatus = async (project: Project, status: Project['status']) => {
+    if (!canManageProjects) return;
     const previousProjects = projects;
     setProjects((prev) => prev.map((item) => (item.id === project.id ? { ...item, status } : item)));
 
@@ -130,6 +175,7 @@ function App() {
   };
 
   const handleDeleteProject = async (projectId: string) => {
+    if (!canDeleteProjects) return;
     const previousProjects = projects;
     const nextProjects = projects.filter((project) => project.id !== projectId);
     setProjects(nextProjects);
@@ -205,6 +251,7 @@ function App() {
   };
 
   const handleDeleteTask = async (taskId: string) => {
+    if (!canDeleteTasks) return;
     const previousTasks = tasks;
     setTasks((prev) => prev.filter((task) => task.id !== taskId));
 
@@ -220,30 +267,67 @@ function App() {
     }
   };
 
+  if (!currentUser) {
+    return (
+      <main className="app">
+        <header>
+          <h1>Project Management Platform</h1>
+          <p>Sign in to continue.</p>
+          <p>Demo users: admin@pmp.local, lead@pmp.local, member@pmp.local</p>
+        </header>
+        <section className="panel">
+          <h2>Sign in</h2>
+          <form onSubmit={handleLogin} className="form-grid">
+            <input
+              placeholder="Email"
+              type="email"
+              value={loginForm.email}
+              onChange={(event) => setLoginForm((prev) => ({ ...prev, email: event.target.value }))}
+            />
+            <input
+              placeholder="Password"
+              type="password"
+              value={loginForm.password}
+              onChange={(event) => setLoginForm((prev) => ({ ...prev, password: event.target.value }))}
+            />
+            <button type="submit">Sign in</button>
+          </form>
+          {authError && <p className="error">{authError}</p>}
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="app">
       <header>
         <h1>Project Management Platform</h1>
+        <p>
+          Signed in as {currentUser.displayName} ({currentUser.role.replace('_', ' ')})
+        </p>
+        <button onClick={() => void handleLogout()}>Sign out</button>
         {message && <p className="message">{message}</p>}
       </header>
 
-      <section className="panel">
-        <h2>Create project</h2>
-        <form onSubmit={handleCreateProject} className="form-grid">
-          <input
-            placeholder="Project name"
-            value={projectForm.name}
-            onChange={(event) => setProjectForm((prev) => ({ ...prev, name: event.target.value }))}
-          />
-          <textarea
-            placeholder="Description"
-            value={projectForm.description ?? ''}
-            onChange={(event) => setProjectForm((prev) => ({ ...prev, description: event.target.value }))}
-          />
-          <button type="submit">Create project</button>
-        </form>
-        {projectErrors.length > 0 && <p className="error">{projectErrors.join(' ')}</p>}
-      </section>
+      {canManageProjects && (
+        <section className="panel">
+          <h2>Create project</h2>
+          <form onSubmit={handleCreateProject} className="form-grid">
+            <input
+              placeholder="Project name"
+              value={projectForm.name}
+              onChange={(event) => setProjectForm((prev) => ({ ...prev, name: event.target.value }))}
+            />
+            <textarea
+              placeholder="Description"
+              value={projectForm.description ?? ''}
+              onChange={(event) => setProjectForm((prev) => ({ ...prev, description: event.target.value }))}
+            />
+            <button type="submit">Create project</button>
+          </form>
+          {projectErrors.length > 0 && <p className="error">{projectErrors.join(' ')}</p>}
+        </section>
+      )}
 
       <section className="panel">
         <div className="row">
@@ -261,10 +345,12 @@ function App() {
               <button onClick={() => setSelectedProjectId(project.id)}>{project.name}</button>
               <span>{project.status}</span>
               <div className="actions">
-                <button onClick={() => handleProjectStatus(project, project.status === 'active' ? 'archived' : 'active')}>
-                  {project.status === 'active' ? 'Archive' : 'Activate'}
-                </button>
-                <button onClick={() => handleDeleteProject(project.id)}>Delete</button>
+                {canManageProjects && (
+                  <button onClick={() => handleProjectStatus(project, project.status === 'active' ? 'archived' : 'active')}>
+                    {project.status === 'active' ? 'Archive' : 'Activate'}
+                  </button>
+                )}
+                {canDeleteProjects && <button onClick={() => handleDeleteProject(project.id)}>Delete</button>}
               </div>
             </li>
           ))}
@@ -341,7 +427,7 @@ function App() {
                               Move to {nextColumn.title}
                             </button>
                           ))}
-                        <button onClick={() => handleDeleteTask(task.id)}>Delete</button>
+                        {canDeleteTasks && <button onClick={() => handleDeleteTask(task.id)}>Delete</button>}
                       </div>
                     </li>
                   ))}
