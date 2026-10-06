@@ -1,4 +1,5 @@
 create extension if not exists pgcrypto;
+create extension if not exists pg_trgm;
 
 create table if not exists users (
   id uuid primary key default gen_random_uuid(),
@@ -12,6 +13,7 @@ create table if not exists projects (
   owner_id uuid not null references users(id),
   name text not null,
   description text,
+  search_text text generated always as (trim(concat_ws(' ', name, coalesce(description, '')))) stored,
   status text not null default 'active' check (status in ('active', 'archived')),
   created_at timestamptz not null default now()
 );
@@ -22,7 +24,9 @@ create table if not exists tasks (
   assignee_id uuid references users(id),
   title text not null,
   description text,
-  status text not null default 'todo' check (status in ('todo', 'in_progress', 'done'))
+  search_text text generated always as (trim(concat_ws(' ', title, coalesce(description, '')))) stored,
+  status text not null default 'todo' check (status in ('todo', 'in_progress', 'done')),
+  created_at timestamptz not null default now()
 );
 
 create table if not exists comments (
