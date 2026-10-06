@@ -7,6 +7,31 @@ export interface User {
   displayName: string;
 }
 
+export type UserRole = 'admin' | 'project_lead' | 'member';
+
+export interface AuthUser extends User {
+  role: UserRole;
+}
+
+export interface LoginInput {
+  email: string;
+  password: string;
+}
+
+export interface AuthResponse {
+  data: {
+    user: AuthUser;
+    accessToken: string;
+  };
+}
+
+export interface AuthTokenPayload {
+  sub: string;
+  email: string;
+  role: UserRole;
+  exp: number;
+}
+
 export interface Project {
   id: string;
   name: string;

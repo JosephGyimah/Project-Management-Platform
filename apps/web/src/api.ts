@@ -1,8 +1,11 @@
 import type {
   ApiError,
   ApiResponse,
+  AuthResponse,
+  AuthUser,
   CreateProjectInput,
   CreateTaskInput,
+  LoginInput,
   PaginatedApiResponse,
   Project,
   ProjectFilters,
@@ -16,6 +19,11 @@ const API_URL =
   (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env?.VITE_API_URL ??
   'http://localhost:4000';
 
+const ACCESS_TOKEN_KEY = 'pmp_access_token';
+
+let accessToken = typeof window !== 'undefined' ? window.localStorage.getItem(ACCESS_TOKEN_KEY) ?? '' : '';
+let refreshInFlight: Promise<string | null> | null = null;
+
 const toQueryString = (params: Record<string, string | number | undefined>): string => {
   const query = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
@@ -27,24 +35,90 @@ const toQueryString = (params: Record<string, string | number | undefined>): str
   return encoded ? `?${encoded}` : '';
 };
 
-const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
+const setAccessToken = (token: string) => {
+  accessToken = token;
+  if (typeof window !== 'undefined') {
+    if (token) {
+      window.localStorage.setItem(ACCESS_TOKEN_KEY, token);
+    } else {
+      window.localStorage.removeItem(ACCESS_TOKEN_KEY);
+    }
+  }
+};
+
+const toErrorMessage = async (response: Response): Promise<string> => {
+  try {
+    const error = (await response.json()) as ApiError;
+    return error.error.issues?.[0]?.message ?? error.error.message;
+  } catch {
+    return 'Request failed.';
+  }
+};
+
+const refreshAccessToken = async (): Promise<string | null> => {
+  if (refreshInFlight) return refreshInFlight;
+
+  refreshInFlight = (async () => {
+    const response = await fetch(`${API_URL}/api/auth/refresh`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    if (!response.ok) {
+      setAccessToken('');
+      return null;
+    }
+
+    const payload = (await response.json()) as AuthResponse;
+    setAccessToken(payload.data.accessToken);
+    return payload.data.accessToken;
+  })().finally(() => {
+    refreshInFlight = null;
+  });
+
+  return refreshInFlight;
+};
+
+const request = async <T>(path: string, init?: RequestInit, retry = true): Promise<T> => {
   const response = await fetch(`${API_URL}${path}`, {
     ...init,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: 'Bearer ' + accessToken } : {}),
       ...(init?.headers ?? {})
     }
   });
 
+  if (response.status === 401 && retry && !path.startsWith('/api/auth/')) {
+    const nextToken = await refreshAccessToken();
+    if (nextToken) {
+      return request<T>(path, init, false);
+    }
+  }
+
   if (!response.ok) {
-    const error = (await response.json()) as ApiError;
-    throw new Error(error.error.issues?.[0]?.message ?? error.error.message);
+    throw new Error(await toErrorMessage(response));
   }
 
   return response.json() as Promise<T>;
 };
 
 export const api = {
+  login: async (payload: LoginInput): Promise<AuthResponse> => {
+    const response = await request<AuthResponse>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }, false);
+    setAccessToken(response.data.accessToken);
+    return response;
+  },
+  me: () => request<ApiResponse<AuthUser>>('/api/auth/me'),
+  logout: async () => {
+    await request<{ data: { loggedOut: true } }>('/api/auth/logout', { method: 'POST' }, false);
+    setAccessToken('');
+  },
   listProjects: (filters: ProjectFilters) =>
     request<PaginatedApiResponse<Project>>(
       `/api/projects${toQueryString({
