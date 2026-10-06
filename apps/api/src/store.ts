@@ -171,7 +171,7 @@ export class PgStore implements DataStore {
 
   async deleteProject(projectId: string): Promise<boolean> {
     const result = await this.pool.query('delete from projects where id = $1', [projectId]);
-    return result.rowCount > 0;
+    return (result.rowCount ?? 0) > 0;
   }
 
   async listTasks(filters: TaskFilters): Promise<PaginatedApiResponse<Task>> {
@@ -269,6 +269,6 @@ export class PgStore implements DataStore {
 
   async deleteTask(taskId: string): Promise<boolean> {
     const result = await this.pool.query('delete from tasks where id = $1', [taskId]);
-    return result.rowCount > 0;
+    return (result.rowCount ?? 0) > 0;
   }
 }

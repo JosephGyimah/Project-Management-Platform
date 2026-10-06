@@ -7,7 +7,6 @@
     "moduleResolution": "Bundler",
     "resolveJsonModule": true,
     "noEmit": true,
-    "baseUrl": ".",
-    "paths": { "@pmp/contracts": ["packages/contracts/src/index.ts"] }
+    "paths": { "@pmp/contracts": ["./packages/contracts/src/index.ts"] }
   }
 }
